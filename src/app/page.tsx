@@ -1,7 +1,6 @@
-// pages/index.tsx or app/page.tsx
+// src/app/page.tsx
 import React from "react";
 import Link from "next/link";
-import { ChevronRightIcon, PlayIcon } from "@heroicons/react/24/outline";
 
 const features = [
   {
@@ -153,9 +152,12 @@ export default function LandingPage() {
               >
                 Demo
               </Link>
-              <button className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition-colors">
+              <Link
+                href="/auth/login"
+                className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition-colors"
+              >
                 Get Started
-              </button>
+              </Link>
             </nav>
           </div>
         </div>
@@ -184,12 +186,21 @@ export default function LandingPage() {
                   version history — powered by Y.js + Tiptap.
                 </p>
                 <div className="flex flex-col sm:flex-row gap-4">
-                  <button className="group relative px-8 py-4 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-xl font-semibold hover:shadow-lg hover:scale-105 transition-all duration-200">
+                  <Link 
+                    href="/auth/login"
+                    className="group relative px-8 py-4 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-xl font-semibold hover:shadow-lg hover:scale-105 transition-all duration-200 text-center"
+                  >
                     Start Collaborating
-                    <ChevronRightIcon className="w-5 h-5 inline-block ml-2 group-hover:translate-x-1 transition-transform" />
-                  </button>
+                    {/* ChevronRightIcon replacement */}
+                    <svg className="w-5 h-5 inline-block ml-2 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7"/>
+                    </svg>
+                  </Link>
                   <button className="group px-8 py-4 border-2 border-indigo-600 text-indigo-600 rounded-xl font-semibold hover:bg-indigo-600 hover:text-white transition-all duration-200">
-                    <PlayIcon className="w-5 h-5 inline-block mr-2" />
+                    {/* PlayIcon replacement */}
+                    <svg className="w-5 h-5 inline-block mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.828 14.828a4 4 0 01-5.656 0M9 10h1m4 0h1m-7 4h12l-2-7H7l-2 7z"/>
+                    </svg>
                     Try Live Demo
                   </button>
                 </div>
