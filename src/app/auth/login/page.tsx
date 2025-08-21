@@ -4,6 +4,7 @@
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import axios from "axios"; // Import axios
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
@@ -73,49 +74,51 @@ export default function LoginPage() {
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
-    if (!validateForm()) return;
+    if (!validateForm()) {
+      setShowAlert(true); // Show alert if validation fails
+      return;
+    }
 
     setLoading(true);
-    setErrors({});
+    setErrors({}); // Clear previous errors
+    setShowAlert(false); // Hide alert initially
 
     try {
-      // TODO: Replace with actual Supabase authentication
-      console.log("Login attempt:", formData);
+      // Destructure email and password from formData
+      const { email, password } = formData;
 
-      // Simulate API call
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      // Make the Axios POST request to your sign-in API route
+      const response = await axios.post("/api/auth/signin", {
+        email,
+        password,
+      });
 
-      // For demo purposes - remove this in production
-      if (
-        formData.email === "demo@example.com" &&
-        formData.password === "password"
-      ) {
-        // Success - redirect to dashboard
-        router.push("/dashboard");
+      // Check the response status for success
+      if (response.status === 200) {
+        // Sign-in successful
+        alert("Sign-in successful!"); // You might want a better UI notification
+        router.push("/dashboard"); // Redirect to dashboard or home page
       } else {
-        // Show error
-        setErrors({ general: "Invalid email or password" });
+        // Handle cases where the API returns a non-200 status but is not an AxiosError
+        setErrors({
+          general: response.data.message || "An unknown error occurred.",
+        });
         setShowAlert(true);
       }
-
-      // TODO: Implement Supabase auth
-      /*
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: formData.email,
-        password: formData.password,
-      })
-
-      if (error) {
-        setErrors({ general: error.message })
-        setShowAlert(true)
-      } else if (data.user) {
-        router.push('/dashboard')
-      }
-      */
     } catch (error) {
-      console.error("Login error:", error);
-      setErrors({ general: "An unexpected error occurred. Please try again." });
+      // Handle Axios errors (e.g., network issues, 401 Unauthorized, 500 Internal Server Error)
+      if (axios.isAxiosError(error)) {
+        const errorMessage =
+          error.response?.data?.message || "Invalid email or password.";
+        setErrors({ general: errorMessage });
+      } else {
+        // Handle other unexpected errors
+        setErrors({
+          general: "An unexpected error occurred. Please try again.",
+        });
+      }
       setShowAlert(true);
+      console.error("Login error:", error);
     } finally {
       setLoading(false);
     }
@@ -144,7 +147,7 @@ export default function LoginPage() {
           required
           icon={
             <svg
-              className="w-5 h-5"
+              className="h-5 w-5"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -170,7 +173,7 @@ export default function LoginPage() {
           required
           icon={
             <svg
-              className="w-5 h-5"
+              className="h-5 w-5"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -190,7 +193,7 @@ export default function LoginPage() {
             <input
               id="remember-me"
               type="checkbox"
-              className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
+              className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
             />
             <label
               htmlFor="remember-me"
@@ -226,8 +229,8 @@ export default function LoginPage() {
             <div className="w-full border-t border-gray-300 dark:border-gray-700" />
           </div>
           <div className="relative flex justify-center text-sm">
-            <span className="px-2 bg-white dark:bg-gray-900 text-gray-500 dark:text-gray-400">
-              Don't have an account?
+            <span className="bg-white px-2 text-gray-500 dark:bg-gray-900 dark:text-gray-400">
+              Dont have an account?
             </span>
           </div>
         </div>
@@ -243,8 +246,8 @@ export default function LoginPage() {
       </div>
 
       {/* Demo credentials */}
-      <div className="mt-6 p-4 bg-gray-50 dark:bg-gray-800 rounded-2xl">
-        <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+      <div className="mt-6 rounded-2xl bg-gray-50 p-4 dark:bg-gray-800">
+        <h4 className="mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">
           Demo Credentials:
         </h4>
         <p className="text-xs text-gray-600 dark:text-gray-400">
