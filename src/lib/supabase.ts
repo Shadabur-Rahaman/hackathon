@@ -11,7 +11,8 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     autoRefreshToken: true,
     persistSession: true,
-    detectSessionInUrl: true
+    detectSessionInUrl: true,
+    flowType: 'pkce'
   },
   realtime: {
     params: {
@@ -20,6 +21,15 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   }
 });
 
+const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+export const supabaseAdmin = serviceKey 
+  ? createClient(supabaseUrl, serviceKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
+    })
+  : null;
 // Enhanced Types
 export interface Profile {
   id: string;
@@ -264,46 +274,109 @@ export const profileApi = {
 
 // Authentication API
 export const authApi = {
-  getCurrentUser: async () => {
-    const { data: { user }, error } = await supabase.auth.getUser();
-    if (error) throw error;
-    return user;
-  },
-
-  signUp: async (email: string, password: string, fullName?: string) => {
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: { full_name: fullName }
-      }
-    });
-    if (error) throw error;
-    return data;
-  },
-
   signIn: async (email: string, password: string) => {
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password
-    });
-    if (error) throw error;
-    return data;
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim().toLowerCase(), // Ensure consistent formatting
+        password: password.trim()
+      });
+
+      if (error) {
+        console.error('Supabase auth error:', error);
+        
+        // Handle specific error cases
+        if (error.message === 'Invalid login credentials') {
+          return {
+            success: false,
+            error: {
+              message: 'Invalid email or password. Please check your credentials.',
+              code: 'INVALID_CREDENTIALS'
+            }
+          };
+        } else if (error.message.includes('Email not confirmed')) {
+          return {
+            success: false,
+            error: {
+              message: 'Please confirm your email address before signing in.',
+              code: 'EMAIL_NOT_CONFIRMED'
+            }
+          };
+        }
+        
+        return {
+          success: false,
+          error: {
+            message: error.message,
+            code: error.message
+          }
+        };
+      }
+
+      if (!data.user || !data.session) {
+        return {
+          success: false,
+          error: {
+            message: 'Authentication failed - no user session created',
+            code: 'NO_SESSION'
+          }
+        };
+      }
+
+      return {
+        success: true,
+        user: data.user,
+        session: data.session
+      };
+
+    } catch (err) {
+      console.error('Auth sign-in error:', err);
+      return {
+        success: false,
+        error: {
+          message: 'Network error. Please try again.',
+          code: 'NETWORK_ERROR'
+        }
+      };
+    }
   },
 
-  signOut: async () => {
-    const { error } = await supabase.auth.signOut();
-    if (error) throw error;
-  },
+  signUp: async (email: string, password: string, metadata?: any) => {
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email: email.trim().toLowerCase(),
+        password: password.trim(),
+        options: {
+          data: metadata,
+          emailRedirectTo: `${window.location.origin}/auth/callback`
+        }
+      });
 
-  resetPassword: async (email: string) => {
-    const { error } = await supabase.auth.resetPasswordForEmail(email);
-    if (error) throw error;
-  },
+      if (error) {
+        return {
+          success: false,
+          error: {
+            message: error.message,
+            code: error.message
+          }
+        };
+      }
 
-  updatePassword: async (password: string) => {
-    const { error } = await supabase.auth.updateUser({ password });
-    if (error) throw error;
+      return {
+        success: true,
+        user: data.user,
+        session: data.session,
+        needsConfirmation: !data.session // If no session, email confirmation is required
+      };
+
+    } catch (err) {
+      return {
+        success: false,
+        error: {
+          message: 'Network error. Please try again.',
+          code: 'NETWORK_ERROR'
+        }
+      };
+    }
   }
 };
 
@@ -490,45 +563,94 @@ export const workspaceApi = {
 
 // Enhanced Document API
 export const documentApi = {
+  // Get documents accessible to the current user
   getDocuments: async (orgId?: string, workspaceId?: string): Promise<Document[]> => {
-    let query = supabase
-      .from('documents')
-      .select(`
-        *,
-        owner:profiles(*),
-        org:orgs(*),
-        workspace:workspaces(*)
-      `)
-      .order('updated_at', { ascending: false });
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error('Not authenticated');
 
+    // Use the RLS-enabled function that returns documents with user roles
+    const { data, error } = await supabase
+      .rpc('get_user_documents', { user_uuid: user.id });
+
+    if (error) throw error;
+
+    // Filter by org and workspace if specified
+    let filteredData = data || [];
     if (orgId) {
-      query = query.eq('org_id', orgId);
+      filteredData = filteredData.filter((doc: any) => doc.org_id === orgId);
     }
     if (workspaceId) {
-      query = query.eq('workspace_id', workspaceId);
+      filteredData = filteredData.filter((doc: any) => doc.workspace_id === workspaceId);
     }
 
-    const { data, error } = await query;
-    if (error) throw error;
-    return data || [];
+    return filteredData;
   },
 
-  getDocument: async (id: string): Promise<Document> => {
+  // Get a single document with permission check
+  getDocument: async (id: string): Promise<Document | null> => {
     const { data, error } = await supabase
       .from('documents')
       .select(`
         *,
         owner:profiles(*),
         org:orgs(*),
-        workspace:workspaces(*)
+        workspace:workspaces(*),
+        collaborators:document_collaborators(
+          user_id,
+          role,
+          profiles!inner(id, email, full_name, avatar_url)
+        )
       `)
       .eq('id', id)
       .single();
 
-    if (error) throw error;
+    if (error) {
+      if (error.code === 'PGRST116') { // No rows returned
+        return null;
+      }
+      throw error;
+    }
+
     return data;
   },
 
+  // Check user's role for a specific document
+  getUserCollaboration: async (documentId: string, userId: string) => {
+    const { data, error } = await supabase
+      .from('document_collaborators')
+      .select('role, permissions')
+      .eq('document_id', documentId)
+      .eq('user_id', userId)
+      .single();
+
+    if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned
+      console.error('Error checking collaboration:', error);
+      throw error;
+    }
+
+    return data;
+  },
+
+  // Check if user can edit a document
+  canUserEdit: async (documentId: string): Promise<boolean> => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return false;
+
+    const { data, error } = await supabase
+      .rpc('can_user_edit_document', { 
+        doc_id: documentId, 
+        user_uuid: user.id 
+      });
+
+    if (error) {
+      console.error('Error checking edit permission:', error);
+      return false;
+    }
+
+    return data || false;
+  },
+
+  // Create a new document
   createDocument: async (
     orgId: string, 
     title: string, 
@@ -561,10 +683,14 @@ export const documentApi = {
     return data;
   },
 
+  // Update document with permission check
   updateDocument: async (id: string, updates: Partial<Document>): Promise<Document> => {
     const { data, error } = await supabase
       .from('documents')
-      .update(updates)
+      .update({
+        ...updates,
+        updated_at: new Date().toISOString()
+      })
       .eq('id', id)
       .select(`
         *,
@@ -578,6 +704,7 @@ export const documentApi = {
     return data;
   },
 
+  // Delete document (only owners can delete due to RLS)
   deleteDocument: async (id: string): Promise<void> => {
     const { error } = await supabase
       .from('documents')
@@ -585,6 +712,402 @@ export const documentApi = {
       .eq('id', id);
 
     if (error) throw error;
+  },
+
+  // ======== COLLABORATOR MANAGEMENT ========
+
+  // Add a collaborator to a document
+  addCollaborator: async (documentId: string, userEmail: string, role: 'viewer' | 'editor') => {
+    const { data, error } = await supabase
+      .rpc('add_document_collaborator', {
+        doc_id: documentId,
+        user_email: userEmail,
+        collab_role: role
+      });
+
+    if (error) throw error;
+    return data;
+  },
+
+  // Remove a collaborator from a document
+  removeCollaborator: async (documentId: string, userId: string): Promise<void> => {
+    const { error } = await supabase
+      .from('document_collaborators')
+      .delete()
+      .eq('document_id', documentId)
+      .eq('user_id', userId);
+
+    if (error) throw error;
+  },
+
+  // Update collaborator role
+  updateCollaboratorRole: async (documentId: string, userId: string, role: 'viewer' | 'editor'): Promise<void> => {
+    const { error } = await supabase
+      .from('document_collaborators')
+      .update({ role })
+      .eq('document_id', documentId)
+      .eq('user_id', userId);
+
+    if (error) throw error;
+  },
+
+  // Get all collaborators for a document
+  getCollaborators: async (documentId: string) => {
+    const { data, error } = await supabase
+      .from('document_collaborators')
+      .select(`
+        *,
+        profiles!inner(
+          id,
+          email,
+          full_name,
+          avatar_url
+        )
+      `)
+      .eq('document_id', documentId);
+
+    if (error) throw error;
+    return data || [];
+  },
+
+  // ======== INVITATION MANAGEMENT ========
+
+  // Create an invitation
+  createInvitation: async (
+    documentId: string,
+    inviteeEmail: string,
+    role: 'viewer' | 'editor',
+    expiresInDays: number = 7
+  ) => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error('Not authenticated');
+
+    const inviteToken = crypto.randomUUID();
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + expiresInDays);
+
+    const { data, error } = await supabase
+      .from('document_invitations')
+      .insert({
+        document_id: documentId,
+        inviter_id: user.id,
+        invitee_email: inviteeEmail,
+        role,
+        invite_token: inviteToken,
+        expires_at: expiresAt.toISOString()
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
+  },
+
+  // Accept an invitation
+  acceptInvitation: async (inviteToken: string) => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error('Not authenticated');
+
+    // Get the invitation
+    const { data: invitation, error: inviteError } = await supabase
+      .from('document_invitations')
+      .select('*')
+      .eq('invite_token', inviteToken)
+      .eq('status', 'pending')
+      .single();
+
+    if (inviteError || !invitation) {
+      throw new Error('Invalid or expired invitation');
+    }
+
+    // Check if invitation has expired
+    if (new Date() > new Date(invitation.expires_at)) {
+      throw new Error('Invitation has expired');
+    }
+
+    // Add user as collaborator
+    await documentApi.addCollaborator(
+      invitation.document_id,
+      invitation.invitee_email,
+      invitation.role
+    );
+
+    // Mark invitation as accepted
+    const { error: updateError } = await supabase
+      .from('document_invitations')
+      .update({
+        status: 'accepted',
+        accepted_at: new Date().toISOString()
+      })
+      .eq('id', invitation.id);
+
+    if (updateError) throw updateError;
+
+    return invitation;
+  },
+
+  // Get invitations for a document
+  getDocumentInvitations: async (documentId: string) => {
+    const { data, error } = await supabase
+      .from('document_invitations')
+      .select('*')
+      .eq('document_id', documentId)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    return data || [];
+  },
+
+  // ======== SHARE LINK MANAGEMENT ========
+
+  // Create a share link
+  createShareLink: async (
+    documentId: string,
+    role: 'viewer' | 'editor',
+    expiresInDays?: number,
+    maxVisits?: number
+  ) => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error('Not authenticated');
+
+    const slug = crypto.randomUUID().replace(/-/g, '').substring(0, 12);
+    const expiresAt = expiresInDays 
+      ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString()
+      : null;
+
+    const { data, error } = await supabase
+      .from('doc_shares')
+      .insert({
+        document_id: documentId,
+        creator_id: user.id,
+        slug,
+        role,
+        expires_at: expiresAt,
+        max_visits: maxVisits
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    return {
+      ...data,
+      shareUrl: `${process.env.NEXT_PUBLIC_SITE_URL}/share/${slug}`
+    };
+  },
+
+  // Get share link by slug
+  getShareLink: async (slug: string) => {
+    const { data, error } = await supabase
+      .from('doc_shares')
+      .select(`
+        *,
+        document:documents(
+          id,
+          title,
+          content,
+          is_public,
+          owner:profiles(full_name, email)
+        )
+      `)
+      .eq('slug', slug)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') return null;
+      throw error;
+    }
+
+    // Check if link has expired
+    if (data.expires_at && new Date() > new Date(data.expires_at)) {
+      return null;
+    }
+
+    // Check if max visits exceeded
+    if (data.max_visits && data.visits >= data.max_visits) {
+      return null;
+    }
+
+    return data;
+  },
+
+  // Increment share link visits
+  incrementShareVisits: async (slug: string) => {
+    const { error } = await supabase
+      .from('doc_shares')
+      .update({
+        visits: supabase.sql`visits + 1`,
+        last_accessed: new Date().toISOString()
+      })
+      .eq('slug', slug);
+
+    if (error) console.error('Error incrementing visits:', error);
+  },
+
+  // Get share links for a document
+  getDocumentShareLinks: async (documentId: string) => {
+    const { data, error } = await supabase
+      .from('doc_shares')
+      .select('*')
+      .eq('document_id', documentId)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    return data || [];
+  },
+
+  // Delete a share link
+  deleteShareLink: async (slug: string) => {
+    const { error } = await supabase
+      .from('doc_shares')
+      .delete()
+      .eq('slug', slug);
+
+    if (error) throw error;
+  },
+
+  // ======== VERSION MANAGEMENT ========
+
+  // Create a document version
+  createVersion: async (
+    documentId: string,
+    content: any,
+    message: string,
+    branch: string = 'main'
+  ) => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error('Not authenticated');
+
+    const hash = btoa(JSON.stringify(content)).slice(0, 8);
+
+    const { data, error } = await supabase
+      .from('document_versions')
+      .insert({
+        document_id: documentId,
+        author_id: user.id,
+        message,
+        version_data: content,
+        hash,
+        branch
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
+  },
+
+  // Get versions for a document
+  getDocumentVersions: async (documentId: string, branch: string = 'main') => {
+    const { data, error } = await supabase
+      .from('document_versions')
+      .select(`
+        *,
+        author:profiles(full_name, email, avatar_url)
+      `)
+      .eq('document_id', documentId)
+      .eq('branch', branch)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    return data || [];
+  },
+
+  // Get a specific version
+  getVersion: async (versionId: string) => {
+    const { data, error } = await supabase
+      .from('document_versions')
+      .select(`
+        *,
+        author:profiles(full_name, email, avatar_url)
+      `)
+      .eq('id', versionId)
+      .single();
+
+    if (error) throw error;
+    return data;
+  },
+
+  // ======== COMMENT MANAGEMENT ========
+
+  // Get comments for a document
+  getDocumentComments: async (documentId: string) => {
+    const { data, error } = await supabase
+      .from('document_comments')
+      .select(`
+        *,
+        author:profiles(full_name, email, avatar_url),
+        replies:document_comments(
+          *,
+          author:profiles(full_name, email, avatar_url)
+        )
+      `)
+      .eq('document_id', documentId)
+      .is('parent_id', null)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    return data || [];
+  },
+
+  // Create a comment
+  createComment: async (
+    documentId: string,
+    authorId: string,
+    content: string,
+    parentId?: number,
+    selection?: { from: number; to: number }
+  ) => {
+    const { data, error } = await supabase
+      .from('document_comments')
+      .insert({
+        document_id: documentId,
+        author_id: authorId,
+        content,
+        parent_id: parentId,
+        anchor_from: selection?.from,
+        anchor_to: selection?.to
+      })
+      .select(`
+        *,
+        author:profiles(full_name, email, avatar_url)
+      `)
+      .single();
+
+    if (error) throw error;
+    return data;
+  },
+
+  // Update a comment
+  updateComment: async (commentId: string, content: string) => {
+    const { data, error } = await supabase
+      .from('document_comments')
+      .update({
+        content,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', commentId)
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
+  },
+
+  // Resolve/unresolve a comment
+  toggleCommentResolution: async (commentId: string, resolved: boolean) => {
+    const { data, error } = await supabase
+      .from('document_comments')
+      .update({
+        status: resolved ? 'resolved' : 'open',
+        resolved_at: resolved ? new Date().toISOString() : null
+      })
+      .eq('id', commentId)
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
   }
 };
 

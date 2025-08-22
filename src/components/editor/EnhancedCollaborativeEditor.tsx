@@ -1,492 +1,349 @@
 'use client';
-import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { useEditor, EditorContent } from '@tiptap/react';
-import StarterKit from '@tiptap/starter-kit';
-import Placeholder from '@tiptap/extension-placeholder';
-import Collaboration from '@tiptap/extension-collaboration';
-import CollaborationCursor from '@tiptap/extension-collaboration-cursor';
-import Link from '@tiptap/extension-link';
-import Image from '@tiptap/extension-image';
-import Table from '@tiptap/extension-table';
-import TableRow from '@tiptap/extension-table-row';
-import TableCell from '@tiptap/extension-table-cell';
-import TableHeader from '@tiptap/extension-table-header';
-import TaskList from '@tiptap/extension-task-list';
-import TaskItem from '@tiptap/extension-task-item';
-import Underline from '@tiptap/extension-underline';
-import TextAlign from '@tiptap/extension-text-align';
-import Color from '@tiptap/extension-color';
-import FontFamily from '@tiptap/extension-font-family';
-import FontSize from '@tiptap/extension-font-size';
-import Dropcursor from '@tiptap/extension-dropcursor';
-import Gapcursor from '@tiptap/extension-gapcursor';
-import History from '@tiptap/extension-history';
-import Focus from '@tiptap/extension-focus';
 
-import * as Y from 'yjs';
-import { WebsocketProvider } from 'y-websocket';
-import { IndexeddbPersistence } from 'y-indexeddb';
-import { useTheme } from '../../lib/theme-context';
-import { useDashboardStore } from '../../lib/store';
-import { supabase, collaborationApi, versionApi, commentApi } from '../../lib/supabase';
-import EditorToolbar from './EditorToolbar';
-import CommentsPanel from './CommentsPanel';
-import VersionsPanel from './VersionsPanel';
-import SharePanel from './SharePanel';
-import ConnectionStatus from './ConnectionStatus';
-import AutoSaveIndicator from './AutoSaveIndicator';
-import PresenceIndicator from './PresenceIndicator';
+import React, { useState } from 'react';
+import { useUser } from '@clerk/nextjs';
 import { toast } from 'react-hot-toast';
+import { Copy, Mail, Link, Twitter, Slack, Facebook } from 'lucide-react';
+import Avatar from 'boring-avatars';
 
-interface EnhancedCollaborativeEditorProps {
+interface SharePanelProps {
   documentId: string;
-  initialContent: any;
-  collaborators: any[];
-  onContentChange: (content: any) => void;
-  onSave: (content: any) => void;
+  documentTitle: string;
+  onClose: () => void;
 }
 
-export default function EnhancedCollaborativeEditor({
+export default function EnhancedSharePanel({
   documentId,
-  initialContent,
-  collaborators,
-  onContentChange,
-  onSave
-}: EnhancedCollaborativeEditorProps) {
-  const { theme } = useTheme();
-  const isDark = theme === 'dark';
-  const { user, setConnectionStatus, setLastSaved, setSaving } = useDashboardStore();
-  
-  const [ydoc, setYdoc] = useState<Y.Doc | null>(null);
-  const [provider, setProvider] = useState<WebsocketProvider | null>(null);
-  const [persistence, setPersistence] = useState<IndexeddbPersistence | null>(null);
-  const [isTyping, setIsTyping] = useState(false);
-  const [activeCollaborators, setActiveCollaborators] = useState<any[]>([]);
-  const [comments, setComments] = useState<any[]>([]);
-  const [versions, setVersions] = useState<any[]>([]);
-  const [showComments, setShowComments] = useState(false);
-  const [showVersions, setShowVersions] = useState(false);
-  const [showShare, setShowShare] = useState(false);
-  const [isOffline, setIsOffline] = useState(false);
-  
-  const typingTimeoutRef = useRef<NodeJS.Timeout>();
-  const autoSaveTimeoutRef = useRef<NodeJS.Timeout>();
-  const lastSavedContentRef = useRef<any>(null);
-  const lastVersionSnapshotTimeRef = useRef<Date | null>(null);
+  documentTitle,
+  onClose
+}: SharePanelProps) {
+  const { user } = useUser();
+  const [activeTab, setActiveTab] = useState<'invite' | 'link' | 'social'>('invite');
+  const [emailList, setEmailList] = useState<string[]>(['']);
+  const [role, setRole] = useState<'viewer' | 'editor'>('editor');
+  const [shareLink, setShareLink] = useState('');
+  const [inviting, setInviting] = useState(false);
 
-  // Initialize Y.js document and collaboration
-  useEffect(() => {
-    if (!user || !documentId) return;
+  // Generate share link
+  const generateShareLink = async (permission: 'viewer' | 'editor') => {
+    try {
+      const response = await fetch('/api/share/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          documentId,
+          permission,
+          expiresIn: '7d'
+        })
+      });
 
-    const doc = new Y.Doc();
-    const ytext = doc.getText('content');
-    
-    // Set initial content
-    if (initialContent && Object.keys(initialContent).length > 0) {
-      ytext.delete(0, ytext.length);
-      ytext.insert(0, initialContent.content || '');
+      const { shareUrl } = await response.json();
+      setShareLink(shareUrl);
+      return shareUrl;
+    } catch (error) {
+      toast.error('Failed to generate share link');
+      return null;
+    }
+  };
+
+  const handleEmailInvite = async () => {
+    if (!user) {
+      toast.error('Please sign in to send invitations');
+      return;
     }
 
-    // IndexedDB persistence for offline support
-    const indexeddbProvider = new IndexeddbPersistence(documentId, doc);
-    setPersistence(indexeddbProvider);
-
-    // WebSocket provider for real-time collaboration
-    const wsProvider = new WebsocketProvider(
-      process.env.NEXT_PUBLIC_YJS_WEBSOCKET_URL || 'ws://localhost:1234',
-      documentId,
-      doc,
-      {
-        params: {
-          token: user.id, // In production, use a proper JWT token
-          doc: documentId
-        }
-      }
+    const validEmails = emailList.filter(email => 
+      email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
     );
 
-    setProvider(wsProvider);
-    setYdoc(doc);
+    if (validEmails.length === 0) {
+      toast.error('Please enter at least one valid email address');
+      return;
+    }
 
-    // Handle connection status
-    wsProvider.on('status', ({ status }: { status: string }) => {
-      if (status === 'connected') {
-        setConnectionStatus('online');
-        setIsOffline(false);
-      } else if (status === 'disconnected') {
-        setConnectionStatus('offline');
-        setIsOffline(true);
-      }
-    });
-
-    // Handle awareness (presence)
-    wsProvider.awareness.on('change', () => {
-      const states = Array.from(wsProvider.awareness.getStates().values());
-      setActiveCollaborators(states.map(state => ({
-        id: state.user?.id,
-        name: state.user?.name,
-        color: state.user?.color,
-        cursor: state.cursor
-      })));
-    });
-
-    // Join collaboration session
-    collaborationApi.joinSession(documentId);
-
-    return () => {
-      wsProvider.destroy();
-      indexeddbProvider.destroy();
-      doc.destroy();
-      collaborationApi.leaveSession(documentId);
-    };
-  }, [documentId, user]);
-
-  // Editor configuration
-  const editor = useEditor({
-    extensions: [
-      StarterKit.configure({
-        history: false, // We'll use Y.js history
-      }),
-      Placeholder.configure({
-        placeholder: 'Start writing your document...',
-      }),
-      Collaboration.configure({
-        document: ydoc,
-        field: 'content',
-      }),
-      CollaborationCursor.configure({
-        provider,
-        user: {
-          id: user?.id || 'anonymous',
-          name: user?.name || 'Anonymous',
-          color: user?.color || '#ff0000',
-        },
-      }),
-      Link.configure({
-        openOnClick: false,
-        HTMLAttributes: {
-          class: 'text-blue-600 underline cursor-pointer',
-        },
-      }),
-      Image.configure({
-        HTMLAttributes: {
-          class: 'max-w-full h-auto',
-        },
-      }),
-      Table.configure({
-        resizable: true,
-      }),
-      TableRow,
-      TableHeader,
-      TableCell,
-      TaskList,
-      TaskItem.configure({
-        nested: true,
-      }),
-      Underline,
-      TextAlign.configure({
-        types: ['heading', 'paragraph'],
-      }),
-      Color,
-      FontFamily,
-      FontSize,
-      Dropcursor.configure({
-        color: '#3b82f6',
-        width: 2,
-      }),
-      Gapcursor,
-      History.configure({
-        depth: 100,
-        newGroupDelay: 500,
-      }),
-      Focus.configure({
-        className: 'has-focus',
-        mode: 'all',
-      }),
-      
-    ],
-    editorProps: {
-      attributes: {
-        class: `prose prose-lg max-w-none focus:outline-none ${
-          isDark 
-            ? 'prose-invert prose-gray' 
-            : 'prose-gray'
-        }`,
-      },
-    },
-    onUpdate: ({ editor }) => {
-      const content = editor.getJSON();
-      onContentChange(content);
-      
-      // Show typing indicator
-      setIsTyping(true);
-      if (typingTimeoutRef.current) {
-        clearTimeout(typingTimeoutRef.current);
-      }
-      typingTimeoutRef.current = setTimeout(() => {
-        setIsTyping(false);
-      }, 1000);
-
-      // Auto-save after a delay
-      if (autoSaveTimeoutRef.current) {
-        clearTimeout(autoSaveTimeoutRef.current);
-      }
-      autoSaveTimeoutRef.current = setTimeout(() => {
-        if (JSON.stringify(content) !== JSON.stringify(lastSavedContentRef.current)) {
-          handleAutoSave(content);
-        }
-      }, 2000);
-    },
-  });
-
-  // Auto-save function
-  const handleAutoSave = useCallback(async (content: any) => {
-    if (!editor || !user) return;
-
+    setInviting(true);
     try {
-      setSaving(true);
-      await onSave(content);
-      lastSavedContentRef.current = content;
-      setLastSaved(new Date());
-      
-      // Create version snapshot periodically
-      const now = new Date();
-      if (!lastVersionSnapshotTimeRef.current || now.getTime() - lastVersionSnapshotTimeRef.current.getTime() > 5 * 60 * 1000) { // 5 minutes
-        await versionApi.createVersion(
+      const response = await fetch('/api/invite/email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
           documentId,
-          content,
-          'Auto-save',
-          'main'
-        );
-        lastVersionSnapshotTimeRef.current = now;
+          documentTitle,
+          emails: validEmails,
+          role,
+          inviterName: user.firstName + ' ' + (user.lastName || '')
+        })
+      });
+
+      const result = await response.json();
+      
+      if (result.success) {
+        toast.success(`✨ Invitations sent to ${validEmails.length} recipients!`);
+        setEmailList(['']);
+      } else {
+        toast.error(result.error || 'Failed to send invitations');
       }
     } catch (error) {
-      console.error('Auto-save failed:', error);
-      toast.error('Auto-save failed');
+      toast.error('Network error. Please try again.');
     } finally {
-      setSaving(false);
+      setInviting(false);
     }
-  }, [editor, user, documentId, onSave]);
+  };
 
-  // Load comments
-  useEffect(() => {
-    const loadComments = async () => {
-      try {
-        const commentsData = await commentApi.getDocumentComments(documentId);
-        setComments(commentsData);
-      } catch (error) {
-        console.error('Failed to load comments:', error);
-      }
+  const copyToClipboard = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success('Link copied to clipboard!');
+    } catch (error) {
+      toast.error('Failed to copy link');
+    }
+  };
+
+  const shareToSocial = (platform: string) => {
+    const text = `Check out this collaborative document: "${documentTitle}"`;
+    const url = shareLink || window.location.href;
+    
+    const shareUrls = {
+      twitter: `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(url)}`,
+      facebook: `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}`,
+      linkedin: `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(url)}`,
+      slack: `slack://open?team=YOUR_TEAM_ID&id=YOUR_CHANNEL_ID&message=${encodeURIComponent(text + ' ' + url)}`
     };
 
-    loadComments();
-  }, [documentId]);
-
-  // Load versions
-  useEffect(() => {
-    const loadVersions = async () => {
-      try {
-        const versionsData = await versionApi.getDocumentVersions(documentId);
-        setVersions(versionsData);
-      } catch (error) {
-        console.error('Failed to load versions:', error);
-      }
-    };
-
-    loadVersions();
-  }, [documentId]);
-
-  // Handle comment creation
-  const handleCreateComment = async (content: string, parentId?: string, anchorFrom?: number, anchorTo?: number) => {
-    try {
-      const newComment = await commentApi.createComment(
-        documentId,
-        content,
-        parentId,
-        anchorFrom,
-        anchorTo
-      );
-      setComments(prev => [...prev, newComment]);
-      toast.success('Comment added');
-    } catch (error) {
-      console.error('Failed to create comment:', error);
-      toast.error('Failed to add comment');
+    if (shareUrls[platform as keyof typeof shareUrls]) {
+      window.open(shareUrls[platform as keyof typeof shareUrls], '_blank');
     }
   };
 
-  // Handle version restore
-  const handleVersionRestore = async (versionId: string) => {
-    try {
-      const version = versions.find(v => v.id === versionId);
-      if (!version) return;
-
-      if (editor) {
-        editor.commands.setContent(version.snapshot_json);
-        await versionApi.createVersion(
-          documentId,
-          version.snapshot_json,
-          `Restored from version: ${version.message}`,
-          'main'
-        );
-        toast.success('Version restored');
-      }
-    } catch (error) {
-      console.error('Failed to restore version:', error);
-      toast.error('Failed to restore version');
-    }
+  const addEmailInput = () => {
+    setEmailList([...emailList, '']);
   };
 
-  // Handle branch creation
-  const handleCreateBranch = async (branchName: string, fromBranch: string = 'main') => {
-    try {
-      await versionApi.createBranch(documentId, branchName, fromBranch);
-      toast.success(`Branch '${branchName}' created`);
-    } catch (error) {
-      console.error('Failed to create branch:', error);
-      toast.error('Failed to create branch');
-    }
+  const updateEmail = (index: number, value: string) => {
+    const newList = [...emailList];
+    newList[index] = value;
+    setEmailList(newList);
   };
 
-  // Handle merge request
-  const handleCreateMergeRequest = async (sourceBranch: string, targetBranch: string, title: string, description?: string) => {
-    try {
-      // This would integrate with the merge request API
-      toast.success('Merge request created');
-    } catch (error) {
-      console.error('Failed to create merge request:', error);
-      toast.error('Failed to create merge request');
-    }
+  const removeEmail = (index: number) => {
+    setEmailList(emailList.filter((_, i) => i !== index));
   };
-
-  if (!editor) {
-    return (
-      <div className={`flex items-center justify-center h-full ${
-        isDark ? 'bg-gray-900' : 'bg-white'
-      }`}>
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
-      </div>
-    );
-  }
 
   return (
-    <div className={`h-full flex flex-col ${
-      isDark ? 'bg-gray-900' : 'bg-white'
-    }`}>
-      {/* Header with status and controls */}
-      <div className={`flex items-center justify-between p-4 border-b ${
-        isDark ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-white'
-      }`}>
-        <div className="flex items-center space-x-4">
-          <ConnectionStatus isOffline={isOffline} />
-          <AutoSaveIndicator />
-          <PresenceIndicator collaborators={activeCollaborators} />
-        </div>
-        
-        <div className="flex items-center space-x-2">
-          <button
-            onClick={() => setShowComments(!showComments)}
-            className={`p-2 rounded-lg transition-colors ${
-              showComments 
-                ? 'bg-indigo-100 text-indigo-600 dark:bg-indigo-900 dark:text-indigo-400'
-                : 'hover:bg-gray-100 dark:hover:bg-gray-700'
-            }`}
-            title="Comments"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-            </svg>
-          </button>
-          
-          <button
-            onClick={() => setShowVersions(!showVersions)}
-            className={`p-2 rounded-lg transition-colors ${
-              showVersions 
-                ? 'bg-indigo-100 text-indigo-600 dark:bg-indigo-900 dark:text-indigo-400'
-                : 'hover:bg-gray-100 dark:hover:bg-gray-700'
-            }`}
-            title="Version History"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-          </button>
-          
-          <button
-            onClick={() => setShowShare(!showShare)}
-            className={`p-2 rounded-lg transition-colors ${
-              showShare 
-                ? 'bg-indigo-100 text-indigo-600 dark:bg-indigo-900 dark:text-indigo-400'
-                : 'hover:bg-gray-100 dark:hover:bg-gray-700'
-            }`}
-            title="Share"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.367 2.684 3 3 0 00-5.367-2.684z" />
-            </svg>
-          </button>
-        </div>
+    <div className="flex flex-col h-full bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-700 w-96">
+      {/* Header */}
+      <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-700">
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+          Share "{documentTitle}"
+        </h3>
+        <button 
+          onClick={onClose} 
+          className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+        >
+          ✕
+        </button>
       </div>
 
-      {/* Toolbar */}
-      <EditorToolbar editor={editor} />
-      
-      {/* Main content area */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Editor */}
-        <div className={`flex-1 overflow-auto ${
-          isDark ? 'text-white' : 'text-gray-900'
-        }`}>
-          <div className="max-w-4xl mx-auto p-6">
-            <EditorContent 
-              editor={editor} 
-              className={`min-h-[calc(100vh-200px)] ${
-                isDark 
-                  ? 'prose-invert prose-gray max-w-none' 
-                  : 'prose-gray max-w-none'
-              }`}
-            />
-            
-            {/* Typing Indicator */}
-            {isTyping && (
-              <div className={`mt-4 px-4 py-2 text-sm rounded-lg ${
-                isDark ? 'bg-gray-800 text-gray-400' : 'bg-gray-50 text-gray-600'
-              }`}>
-                <span className="flex items-center space-x-2">
-                  <div className="flex space-x-1">
-                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
-                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
-                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
-                  </div>
-                  <span>You're typing...</span>
-                </span>
+      {/* Tabs */}
+      <div className="flex border-b border-gray-200 dark:border-gray-700">
+        {[
+          { id: 'invite', label: 'Email Invite', icon: Mail },
+          { id: 'link', label: 'Share Link', icon: Link },
+          { id: 'social', label: 'Social', icon: Twitter }
+        ].map(({ id, label, icon: Icon }) => (
+          <button
+            key={id}
+            onClick={() => setActiveTab(id as any)}
+            className={`flex-1 flex items-center justify-center space-x-2 px-4 py-3 text-sm font-medium
+                      ${activeTab === id
+                        ? 'text-indigo-600 border-b-2 border-indigo-600 bg-indigo-50 dark:bg-indigo-900/20'
+                        : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+          >
+            <Icon className="w-4 h-4" />
+            <span>{label}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 p-6 overflow-y-auto">
+        {activeTab === 'invite' && (
+          <div className="space-y-6">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                Invite people via email
+              </label>
+              
+              {emailList.map((email, index) => (
+                <div key={index} className="flex items-center space-x-2 mb-2">
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => updateEmail(index, e.target.value)}
+                    placeholder="Enter email address"
+                    className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg 
+                              focus:outline-none focus:ring-2 focus:ring-indigo-500 
+                              bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+                  />
+                  {emailList.length > 1 && (
+                    <button
+                      onClick={() => removeEmail(index)}
+                      className="text-red-500 hover:text-red-700 px-2"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              ))}
+              
+              <button
+                onClick={addEmailInput}
+                className="text-indigo-600 hover:text-indigo-700 text-sm font-medium"
+              >
+                + Add another email
+              </button>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                Permission level
+              </label>
+              <select
+                value={role}
+                onChange={(e) => setRole(e.target.value as 'viewer' | 'editor')}
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg 
+                          focus:outline-none focus:ring-2 focus:ring-indigo-500
+                          bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+              >
+                <option value="viewer">Can view - View and comment only</option>
+                <option value="editor">Can edit - View, comment, and edit</option>
+              </select>
+            </div>
+
+            <button
+              onClick={handleEmailInvite}
+              disabled={inviting}
+              className="w-full flex items-center justify-center space-x-2 px-4 py-2 
+                        bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 
+                        disabled:bg-gray-400 disabled:cursor-not-allowed"
+            >
+              <Mail className="w-4 h-4" />
+              <span>{inviting ? 'Sending...' : 'Send Invitations'}</span>
+            </button>
+          </div>
+        )}
+
+        {activeTab === 'link' && (
+          <div className="space-y-6">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                Generate shareable link
+              </label>
+              <div className="flex space-x-2">
+                <button
+                  onClick={() => generateShareLink('viewer')}
+                  className="flex-1 px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                >
+                  View Only
+                </button>
+                <button
+                  onClick={() => generateShareLink('editor')}
+                  className="flex-1 px-3 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+                >
+                  Can Edit
+                </button>
+              </div>
+            </div>
+
+            {shareLink && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  Share this link
+                </label>
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="text"
+                    value={shareLink}
+                    readOnly
+                    className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg 
+                              bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm"
+                  />
+                  <button
+                    onClick={() => copyToClipboard(shareLink)}
+                    className="flex items-center space-x-1 px-3 py-2 bg-gray-100 hover:bg-gray-200 
+                              rounded-lg text-gray-700 text-sm"
+                  >
+                    <Copy className="w-4 h-4" />
+                    <span>Copy</span>
+                  </button>
+                </div>
               </div>
             )}
-          </div>
-        </div>
 
-        {/* Side Panels */}
-        {showComments && (
-          <CommentsPanel
-            comments={comments}
-            onCreateComment={handleCreateComment}
-            onClose={() => setShowComments(false)}
-          />
+            <div className="bg-amber-50 dark:bg-amber-900/20 p-4 rounded-lg">
+              <p className="text-sm text-amber-700 dark:text-amber-300">
+                <strong>⚠️ Security Notice:</strong> Anyone with this link will be able to access your document. 
+                Links expire in 7 days by default.
+              </p>
+            </div>
+          </div>
         )}
-        
-        {showVersions && (
-          <VersionsPanel
-            versions={versions}
-            onRestore={handleVersionRestore}
-            onCreateBranch={handleCreateBranch}
-            onCreateMergeRequest={handleCreateMergeRequest}
-            onClose={() => setShowVersions(false)}
-          />
-        )}
-        
-        {showShare && (
-          <SharePanel
-            documentId={documentId}
-            onClose={() => setShowShare(false)}
-          />
+
+        {activeTab === 'social' && (
+          <div className="space-y-6">
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              Share this document on social platforms
+            </p>
+
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={() => shareToSocial('twitter')}
+                className="flex items-center justify-center space-x-2 px-4 py-3 
+                          bg-blue-500 text-white rounded-lg hover:bg-blue-600"
+              >
+                <Twitter className="w-4 h-4" />
+                <span>Twitter</span>
+              </button>
+
+              <button
+                onClick={() => shareToSocial('facebook')}
+                className="flex items-center justify-center space-x-2 px-4 py-3 
+                          bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+              >
+                <Facebook className="w-4 h-4" />
+                <span>Facebook</span>
+              </button>
+
+              <button
+                onClick={() => shareToSocial('linkedin')}
+                className="flex items-center justify-center space-x-2 px-4 py-3 
+                          bg-blue-700 text-white rounded-lg hover:bg-blue-800"
+              >
+                <Link className="w-4 h-4" />
+                <span>LinkedIn</span>
+              </button>
+
+              <button
+                onClick={() => shareToSocial('slack')}
+                className="flex items-center justify-center space-x-2 px-4 py-3 
+                          bg-green-600 text-white rounded-lg hover:bg-green-700"
+              >
+                <Slack className="w-4 h-4" />
+                <span>Slack</span>
+              </button>
+            </div>
+
+            <div className="mt-4">
+              <button
+                onClick={() => copyToClipboard(window.location.href)}
+                className="w-full flex items-center justify-center space-x-2 px-4 py-2 
+                          border border-gray-300 rounded-lg hover:bg-gray-50"
+              >
+                <Copy className="w-4 h-4" />
+                <span>Copy Current Page Link</span>
+              </button>
+            </div>
+          </div>
         )}
       </div>
     </div>

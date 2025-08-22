@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../lib/auth-context';
 import { useTheme } from '../../lib/theme-context';
-import { Mail, Lock, Eye, EyeOff, AlertCircle } from 'lucide-react';
+import { supabase } from '../../lib/supabase';
+import { Mail, Lock, Eye, EyeOff, AlertCircle, RefreshCw } from 'lucide-react';
 
 interface SignInFormProps {
   onSwitchToSignUp: () => void;
@@ -15,27 +16,83 @@ export default function SignInForm({ onSwitchToSignUp, onSuccess }: SignInFormPr
   const { theme } = useTheme();
   const isDark = theme === 'dark';
 
+  const [mounted, setMounted] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [errorCode, setErrorCode] = useState('');
+
+  // Ensure client-side hydration
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  if (!mounted) {
+    return (
+      <div className="w-full max-w-md mx-auto animate-pulse">
+        <div className="text-center mb-8">
+          <div className="h-8 bg-gray-200 rounded mb-4"></div>
+          <div className="h-4 bg-gray-200 rounded"></div>
+        </div>
+        <div className="space-y-6">
+          <div className="h-12 bg-gray-200 rounded"></div>
+          <div className="h-12 bg-gray-200 rounded"></div>
+          <div className="h-12 bg-gray-200 rounded"></div>
+        </div>
+      </div>
+    );
+  }
+
+  const handleResendConfirmation = async () => {
+    try {
+      const { error } = await supabase.auth.resend({
+        type: 'signup',
+        email: email
+      });
+      
+      if (error) {
+        setError('Failed to resend confirmation email');
+      } else {
+        setError('Confirmation email sent! Please check your inbox.');
+        setErrorCode('EMAIL_SENT');
+      }
+    } catch (err) {
+      setError('Failed to resend confirmation email');
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError('');
-    
+    setErrorCode('');
+
     try {
-      await signIn(email, password);
-      onSuccess?.();
-    } catch (error: any) {
-      console.error('Auth error:', error);
-      setError(error.message || error.toString() || 'Authentication failed');
+      const result = await signIn(email, password);
+      
+      if (!result.success) {
+        setErrorCode(result.error?.code || '');
+        
+        if (result.error?.code === 'EMAIL_NOT_CONFIRMED') {
+          setError('Please check your email and click the confirmation link before signing in.');
+        } else if (result.error?.code === 'INVALID_CREDENTIALS') {
+          setError('Invalid email or password. Please check your credentials and try again.');
+        } else {
+          setError(result.error?.message || 'Sign in failed');
+        }
+      } else {
+        onSuccess?.();
+      }
+    } catch (error) {
+      setError('An unexpected error occurred');
+      setErrorCode('UNEXPECTED_ERROR');
     } finally {
       setLoading(false);
     }
-};
+  };
+
   return (
     <div className={`w-full max-w-md mx-auto ${isDark ? 'text-white' : 'text-gray-900'}`}>
       <div className="text-center mb-8">
@@ -49,13 +106,34 @@ export default function SignInForm({ onSwitchToSignUp, onSuccess }: SignInFormPr
 
       <form onSubmit={handleSubmit} className="space-y-6">
         {error && (
-          <div className={`flex items-center p-4 rounded-lg ${
-            isDark 
-              ? 'bg-red-900/50 border border-red-800 text-red-100' 
-              : 'bg-red-50 border border-red-200 text-red-800'
+          <div className={`p-4 rounded-lg border ${
+            errorCode === 'EMAIL_SENT'
+              ? isDark 
+                ? 'bg-green-900/50 border-green-800 text-green-100' 
+                : 'bg-green-50 border-green-200 text-green-800'
+              : isDark 
+                ? 'bg-red-900/50 border-red-800 text-red-100' 
+                : 'bg-red-50 border-red-200 text-red-800'
           }`}>
-            <AlertCircle className="w-5 h-5 mr-2 flex-shrink-0" />
-            <span className="text-sm">{error}</span>
+            <div className="flex items-start space-x-3">
+              <AlertCircle className="w-5 h-5 mt-0.5 flex-shrink-0" />
+              <div className="flex-1">
+                <span className="text-sm">{error}</span>
+                
+                {errorCode === 'EMAIL_NOT_CONFIRMED' && (
+                  <div className="mt-3">
+                    <button
+                      type="button"
+                      onClick={handleResendConfirmation}
+                      className="flex items-center space-x-1 text-sm font-medium underline hover:no-underline"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      <span>Resend confirmation email</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         )}
 
@@ -77,7 +155,8 @@ export default function SignInForm({ onSwitchToSignUp, onSuccess }: SignInFormPr
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
-              className={`w-full pl-10 pr-3 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors ${
+              disabled={loading}
+              className={`w-full pl-10 pr-3 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                 isDark
                   ? 'bg-gray-800 border-gray-600 text-white placeholder-gray-400'
                   : 'bg-white border-gray-300 text-gray-900 placeholder-gray-500'
@@ -105,7 +184,8 @@ export default function SignInForm({ onSwitchToSignUp, onSuccess }: SignInFormPr
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              className={`w-full pl-10 pr-12 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors ${
+              disabled={loading}
+              className={`w-full pl-10 pr-12 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                 isDark
                   ? 'bg-gray-800 border-gray-600 text-white placeholder-gray-400'
                   : 'bg-white border-gray-300 text-gray-900 placeholder-gray-500'
@@ -115,7 +195,8 @@ export default function SignInForm({ onSwitchToSignUp, onSuccess }: SignInFormPr
             <button
               type="button"
               onClick={() => setShowPassword(!showPassword)}
-              className={`absolute inset-y-0 right-0 pr-3 flex items-center ${
+              disabled={loading}
+              className={`absolute inset-y-0 right-0 pr-3 flex items-center disabled:opacity-50 ${
                 isDark ? 'text-gray-400 hover:text-gray-300' : 'text-gray-500 hover:text-gray-700'
               }`}
             >
@@ -126,11 +207,11 @@ export default function SignInForm({ onSwitchToSignUp, onSuccess }: SignInFormPr
 
         <button
           type="submit"
-          disabled={loading}
-          className={`w-full py-3 px-4 rounded-lg font-medium transition-colors ${
-            loading
+          disabled={loading || !email.trim() || !password.trim()}
+          className={`w-full py-3 px-4 rounded-lg font-medium transition-all duration-200 ${
+            loading || !email.trim() || !password.trim()
               ? 'bg-gray-400 cursor-not-allowed'
-              : 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white shadow-lg hover:shadow-xl'
+              : 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white shadow-lg hover:shadow-xl transform hover:scale-[1.02]'
           }`}
         >
           {loading ? (
@@ -149,7 +230,8 @@ export default function SignInForm({ onSwitchToSignUp, onSuccess }: SignInFormPr
           Don't have an account?{' '}
           <button
             onClick={onSwitchToSignUp}
-            className={`font-medium hover:underline ${
+            disabled={loading}
+            className={`font-medium hover:underline disabled:opacity-50 ${
               isDark ? 'text-indigo-400 hover:text-indigo-300' : 'text-indigo-600 hover:text-indigo-500'
             }`}
           >

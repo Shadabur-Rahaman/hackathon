@@ -2,124 +2,95 @@
 
 import React, { useState } from 'react';
 import { useTheme } from '../../lib/theme-context';
-import { X, AlertTriangle, Trash2 } from 'lucide-react';
+import { X, Trash2, AlertTriangle, Loader2 } from 'lucide-react';
 
 interface DeleteDocumentModalProps {
   document: any;
-  onDelete: () => Promise<void>;
+  onDelete: () => void;
   onClose: () => void;
 }
 
 export default function DeleteDocumentModal({ document, onDelete, onClose }: DeleteDocumentModalProps) {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
-
-  const [loading, setLoading] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const handleDelete = async () => {
-    setLoading(true);
+    setDeleting(true);
     try {
       await onDelete();
     } catch (error) {
-      console.error('Error deleting document:', error);
+      console.error('Failed to delete document:', error);
     } finally {
-      setLoading(false);
+      setDeleting(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className={`w-full max-w-md mx-4 rounded-lg shadow-xl ${
-        isDark ? 'bg-gray-800' : 'bg-white'
-      }`}>
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className={`${isDark ? 'bg-gray-800' : 'bg-white'} rounded-lg shadow-xl w-full max-w-md mx-4`}>
         {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700">
+        <div className={`flex items-center justify-between p-6 border-b ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
           <div className="flex items-center space-x-3">
-            <div className={`p-2 rounded-lg ${
-              isDark ? 'bg-red-600/20' : 'bg-red-100'
-            }`}>
-              <AlertTriangle className={`w-5 h-5 ${
-                isDark ? 'text-red-400' : 'text-red-600'
-              }`} />
+            <div className="flex-shrink-0 w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+              <AlertTriangle className="w-5 h-5 text-red-600" />
             </div>
-            <h2 className={`text-lg font-semibold ${
-              isDark ? 'text-white' : 'text-gray-900'
-            }`}>
+            <h3 className={`text-lg font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>
               Delete Document
-            </h2>
+            </h3>
           </div>
           <button
             onClick={onClose}
-            disabled={loading}
-            className={`p-1 rounded-lg transition-colors ${
-              isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-100'
-            }`}
+            className={`p-2 rounded-lg hover:bg-gray-100 ${isDark ? 'hover:bg-gray-700 text-gray-400' : 'text-gray-500'}`}
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Content */}
+        {/* Body */}
         <div className="p-6">
-          <div className="mb-6">
-            <p className={`mb-4 ${
-              isDark ? 'text-gray-300' : 'text-gray-600'
-            }`}>
-              Are you sure you want to delete this document? This action cannot be undone.
-            </p>
-            
-            <div className={`p-4 rounded-lg ${
-              isDark ? 'bg-gray-700/50' : 'bg-gray-50'
-            }`}>
-              <h3 className={`font-medium mb-1 ${
-                isDark ? 'text-white' : 'text-gray-900'
-              }`}>
-                {document.title}
-              </h3>
-              <p className={`text-sm ${
-                isDark ? 'text-gray-400' : 'text-gray-600'
-              }`}>
-                Created {new Date(document.created_at).toLocaleDateString()}
-              </p>
+          <p className={`text-sm ${isDark ? 'text-gray-300' : 'text-gray-600'} mb-4`}>
+            Are you sure you want to delete <strong>"{document.title}"</strong>? 
+            This action cannot be undone and all document data will be permanently removed.
+          </p>
+
+          <div className={`p-4 rounded-lg ${isDark ? 'bg-red-900/20 border border-red-800' : 'bg-red-50 border border-red-200'}`}>
+            <div className="flex items-start space-x-3">
+              <AlertTriangle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+              <div>
+                <h4 className={`font-medium text-sm ${isDark ? 'text-red-400' : 'text-red-800'}`}>
+                  This will permanently delete:
+                </h4>
+                <ul className={`mt-2 text-sm list-disc list-inside space-y-1 ${isDark ? 'text-red-300' : 'text-red-700'}`}>
+                  <li>The document content</li>
+                  <li>All version history</li>
+                  <li>Comments and discussions</li>
+                  <li>Sharing permissions</li>
+                </ul>
+              </div>
             </div>
           </div>
+        </div>
 
-          {/* Actions */}
-          <div className="flex items-center justify-end space-x-3">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={loading}
-              className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                isDark
-                  ? 'text-gray-300 hover:text-white'
-                  : 'text-gray-600 hover:text-gray-900'
-              }`}
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleDelete}
-              disabled={loading}
-              className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                loading
-                  ? 'bg-gray-400 cursor-not-allowed'
-                  : 'bg-red-600 hover:bg-red-700 text-white'
-              }`}
-            >
-              {loading ? (
-                <div className="flex items-center space-x-2">
-                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                  <span>Deleting...</span>
-                </div>
-              ) : (
-                <div className="flex items-center space-x-2">
-                  <Trash2 className="w-4 h-4" />
-                  <span>Delete Document</span>
-                </div>
-              )}
-            </button>
-          </div>
+        {/* Footer */}
+        <div className={`flex items-center justify-end space-x-3 px-6 py-4 border-t ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
+          <button
+            onClick={onClose}
+            disabled={deleting}
+            className={`px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 ${
+              isDark ? 'border-gray-600 text-gray-300 hover:bg-gray-700' : 'text-gray-700'
+            }`}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleDelete}
+            disabled={deleting}
+            className="flex items-center space-x-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {deleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+            <span>{deleting ? 'Deleting...' : 'Delete Document'}</span>
+          </button>
         </div>
       </div>
     </div>
